@@ -1,71 +1,71 @@
 from django.core.management.base import BaseCommand
-from bs4 import BeautifulSoup
 import requests
-from medals.models import Country  # Importa seu modelo Country
+from medals.models import Country  # Certifique-se de que este seja o modelo correto
 
 class Command(BaseCommand):
-    help = "Scrape Olympic medal data and save to the database"
+    help = "Fetch Olympic medal data from API and save to the database"
 
     def handle(self, *args, **kwargs):
-        self.stdout.write("Starting web scraping...")  # Log para indicar o início do processo
+        self.stdout.write("Starting to fetch data from API...")
 
-        # URL da página que contém o quadro de medalhas
-        url = 'https://olympics.com/pt/paris-2024/medalhas'  # Certifique-se de que esta URL está correta
+        url = 'https://apis.codante.io/olympic-games/countries'
 
-        # Tenta fazer a requisição à página
         try:
-            response = requests.get(url)
-            response.raise_for_status()  # Verifica se a requisição foi bem-sucedida
-            self.stdout.write(self.style.SUCCESS("Successfully connected to the URL"))  # Log de sucesso na conexão
+            self.stdout.write("Attempting to connect to the API...")
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            self.stdout.write(self.style.SUCCESS("Successfully connected to the API"))
         except requests.exceptions.RequestException as e:
-            self.stdout.write(self.style.ERROR(f"Failed to retrieve the webpage: {e}"))  # Log de erro
-            return  # Encerra a execução em caso de erro na conexão
-
-        # Analisa o conteúdo HTML da página usando BeautifulSoup
-        soup = BeautifulSoup(response.content, 'html.parser')
-
-        # Procura todos os elementos que representam as linhas de países no quadro de medalhas
-        countries_data = soup.find_all('div', {'data-testid': 'noc-row'})
-
-        if not countries_data:
-            self.stdout.write(self.style.ERROR("No country data found on the page."))  # Log de erro se não encontrar dados
+            self.stdout.write(self.style.ERROR(f"Failed to retrieve the data from API: {e}"))
             return
 
-        # Itera sobre cada país encontrado na página
+        # Tente acessar a chave 'data' dentro da resposta JSON
+        try:
+            response_json = response.json()
+            countries_data = response_json.get('data', [])  # Acessa a lista de países
+            if not countries_data:
+                self.stdout.write(self.style.ERROR("No data found under 'data' key"))
+                return
+        except ValueError as e:
+            self.stdout.write(self.style.ERROR(f"Failed to parse JSON data: {e}"))
+            return
+
         for country in countries_data:
             try:
-                # Extrai as informações desejadas para cada país
-                position = country.find('span', {'class': 'emotion-srm-1m7a47k'}).text
-                flag_img = country.find('img', {'class': 'euzfwma3'}).get('src')
-                code = country.find('span', {'class': 'euzfwma4'}).text
-                name = country.find('span', {'class': 'euzfwma5'}).text
-                gold = int(country.find_all('span', {'class': 'emotion-srm-81g9w1'})[0].text)
-                silver = int(country.find_all('span', {'class': 'emotion-srm-81g9w1'})[1].text)
-                bronze = int(country.find_all('span', {'class': 'emotion-srm-81g9w1'})[2].text)
-                total = int(country.find('span', {'class': 'emotion-srm-5nhv3o'}).text)
+                # Confirma se cada item é um dicionário
+                if not isinstance(country, dict):
+                    self.stdout.write(self.style.ERROR(f"Unexpected data format: {country}"))
+                    continue
 
-                # Log das informações extraídas
+                code = country['id']
+                name = country['name']
+                gold = int(country['gold_medals'])
+                silver = int(country['silver_medals'])
+                bronze = int(country['bronze_medals'])
+                total = gold + silver + bronze  # Calcula o total de medalhas
+
                 self.stdout.write(self.style.NOTICE(
                     f"Processing {name}: Gold={gold}, Silver={silver}, Bronze={bronze}, Total={total}"
                 ))
 
-                # Salva ou atualiza o país no banco de dados
-                country_obj, created = Country.objects.get_or_create(name=name)
+                country_obj, created = Country.objects.get_or_create(code=code, defaults={
+                    'name': name,
+                    'gold': gold,
+                    'silver': silver,
+                    'bronze': bronze,
+                })
                 if created:
                     self.stdout.write(self.style.SUCCESS(f"Added new country: {name}"))
                 else:
                     self.stdout.write(self.style.WARNING(f"Updated existing country: {name}"))
+                    country_obj.gold = gold
+                    country_obj.silver = silver
+                    country_obj.bronze = bronze
+                    country_obj.save()
 
-                # Atualiza os dados do país no banco de dados
-                country_obj.gold = gold
-                country_obj.silver = silver
-                country_obj.bronze = bronze
-                country_obj.total = total
-                country_obj.save()
-
+            except KeyError as e:
+                self.stdout.write(self.style.ERROR(f"Missing expected key in data: {e}"))
             except Exception as e:
-                # Log de qualquer erro encontrado ao processar um país
                 self.stdout.write(self.style.ERROR(f"Failed to process country data: {e}"))
-        
-        # Log de conclusão do processo de scraping
-        self.stdout.write(self.style.SUCCESS("Web scraping completed successfully!"))
+
+        self.stdout.write(self.style.SUCCESS("Data fetching completed successfully!"))
